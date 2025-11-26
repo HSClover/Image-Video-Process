@@ -34,72 +34,74 @@ def train_model(model, dataloader, optimizer, recon_loss_fn, temp_loss_fn, scale
     """
     학습 루프 함수
     모든 필요한 객체를 인자로 받아서 실행 (Scope 문제 해결)
+    KeyboardInterrupt 예외 처리를 추가하여 강제 종료 시 저장 기능 구현
     """
     model.train()
     print(f"Start training for {EPOCHS} epochs...")
     
-    for epoch in range(EPOCHS):
-        total_loss = 0
-        last_spatial_loss = 0.0
-        last_temporal_loss = 0.0
-        epoch_start = time.time()
-        
-        for batch_idx, (noisy_input_9ch, clean_t, noisy_t_plus_1) in enumerate(dataloader):
-            # 비동기 전송
-            noisy_input_9ch = noisy_input_9ch.to(device, dtype=torch.float, non_blocking=True)
-            clean_t = clean_t.to(device, dtype=torch.float, non_blocking=True)
-            noisy_t_plus_1 = noisy_t_plus_1.to(device, dtype=torch.float, non_blocking=True)
-
-            # AMP 자동 mixed precision
-            # Pylance가 타입 경고를 낼 수 있으나 런타임에는 정상 동작합니다.
-            with autocast_fn(**autocast_kwargs):
-                # 1. 순전파 (t 프레임 복원)
-                output_t = model(noisy_input_9ch)
-                
-                # 2. 손실 계산
-                spatial_loss = recon_loss_fn(output_t, clean_t)
-                
-                # t+1 예측을 위한 입력 구성
-                noisy_input_9ch_plus_1 = torch.cat([noisy_t_plus_1] * 3, dim=1).to(device, dtype=torch.float, non_blocking=True)
-                output_t_plus_1 = model(noisy_input_9ch_plus_1)
-                
-                temporal_loss = temp_loss_fn(output_t, output_t_plus_1)
-                
-                loss = spatial_loss + LAMBDA_TEMP * temporal_loss
-
-            # 3. 역전파 및 최적화 (Scaler 사용)
-            optimizer.zero_grad()
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-
-            # (디버그) GPU 동기화 후 시간 측정
-            # torch.cuda.synchronize()
+    try:
+        for epoch in range(EPOCHS):
+            total_loss = 0
+            last_spatial_loss = 0.0
+            last_temporal_loss = 0.0
+            epoch_start = time.time()
             
-            total_loss += loss.item()
-            last_spatial_loss = spatial_loss.item()
-            last_temporal_loss = temporal_loss.item()
-            
-            # 로그 출력
-            if ((batch_idx + 1) % 5 == 0) or (batch_idx + 1 == len(dataloader)):
-                elapsed = time.time() - epoch_start
-                print(f'  [Epoch {epoch+1}/{EPOCHS}] [Batch {batch_idx+1}/{len(dataloader)}] '
-                      f'Loss:{loss.item():.6f} Spat:{spatial_loss.item():.6f} Temp:{temporal_loss.item():.6f} '
-                      f'Time:{elapsed:.2f}s', flush=True)
+            for batch_idx, (noisy_input_9ch, clean_t, noisy_t_plus_1) in enumerate(dataloader):
+                # 비동기 전송
+                noisy_input_9ch = noisy_input_9ch.to(device, dtype=torch.float, non_blocking=True)
+                clean_t = clean_t.to(device, dtype=torch.float, non_blocking=True)
+                noisy_t_plus_1 = noisy_t_plus_1.to(device, dtype=torch.float, non_blocking=True)
 
-        avg_loss = total_loss / len(dataloader)
-        print(f"Epoch [{epoch+1}/{EPOCHS}] Average Loss: {avg_loss:.6f}")
+                # AMP 자동 mixed precision
+                with autocast_fn(**autocast_kwargs):
+                    # 1. 순전파 (t 프레임 복원)
+                    output_t = model(noisy_input_9ch)
+                    
+                    # 2. 손실 계산
+                    spatial_loss = recon_loss_fn(output_t, clean_t)
+                    
+                    # t+1 예측을 위한 입력 구성
+                    noisy_input_9ch_plus_1 = torch.cat([noisy_t_plus_1] * 3, dim=1).to(device, dtype=torch.float, non_blocking=True)
+                    output_t_plus_1 = model(noisy_input_9ch_plus_1)
+                    
+                    temporal_loss = temp_loss_fn(output_t, output_t_plus_1)
+                    
+                    loss = spatial_loss + LAMBDA_TEMP * temporal_loss
 
-        # 에포크마다 모델 가중치 업데이트 (덮어쓰기)
+                # 3. 역전파 및 최적화 (Scaler 사용)
+                optimizer.zero_grad()
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                
+                total_loss += loss.item()
+                last_spatial_loss = spatial_loss.item()
+                last_temporal_loss = temporal_loss.item()
+                
+                # 로그 출력
+                if ((batch_idx + 1) % 5 == 0) or (batch_idx + 1 == len(dataloader)):
+                    elapsed = time.time() - epoch_start
+                    print(f'  [Epoch {epoch+1}/{EPOCHS}] [Batch {batch_idx+1}/{len(dataloader)}] '
+                          f'Loss:{loss.item():.6f} Spat:{spatial_loss.item():.6f} Temp:{temporal_loss.item():.6f} '
+                          f'Time:{elapsed:.2f}s', flush=True)
+
+            avg_loss = total_loss / len(dataloader)
+            print(f"Epoch [{epoch+1}/{EPOCHS}] Average Loss: {avg_loss:.6f}")
+
+            # 에포크마다 모델 가중치 업데이트 (덮어쓰기)
+            torch.save(model.state_dict(), save_path)
+            print(f"  >> Model weights updated to '{save_path}'")
+
+        print("Training Finished.")
+        # 학습 완료 후 모델 저장
         torch.save(model.state_dict(), save_path)
-        print(f"  >> Model weights updated to '{save_path}'")
+        print(f"Model weights saved to '{save_path}'")
 
-    print("Training Finished.")
-    
-    # 학습 완료 후 모델 저장
-    torch.save(model.state_dict(), save_path)
-    print(f"Model weights saved to '{save_path}'")
-
+    except KeyboardInterrupt:
+        print("\n\nTraining interrupted by user (KeyboardInterrupt).")
+        print("Saving current model weights before exiting...")
+        torch.save(model.state_dict(), save_path)
+        print(f"Model weights saved to '{save_path}'. Exiting.")
 
 if __name__ == '__main__':
     # 1. 기본 설정
