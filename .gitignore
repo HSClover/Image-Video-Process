@@ -23,8 +23,8 @@ Thumbs.db
 
 # ⭐⭐ 학습 데이터 폴더 전체 제외 ⭐⭐
 # 이 폴더 아래의 모든 하위 폴더(원천 데이터, 라벨링 데이터 등)가 제외됩니다.
-Training/
-Validation/
+/Training/
+/Validation/
 
 # 학습된 모델 가중치 파일
 *.pth
